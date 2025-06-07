@@ -33,8 +33,9 @@ app.mount("/static", StaticFiles(directory=MODELS_DIR), name="static")
 def generate_model_id() -> str:
     return str(uuid.uuid4())
 
-@app.get("/api/models", response_model=List[Dict[str, Any]])
-def get_models():
+# Add this endpoint to your FastAPI backend
+@app.get("/api/models/search")
+def search_models(query: str = ""):
     models = []
     
     if not MODELS_DIR.exists():
@@ -49,7 +50,11 @@ def get_models():
                     with open(metadata_path, 'r') as f:
                         metadata = json.load(f)
                     
-                    # Get the most recent modified time
+                    # Skip if query doesn't match name or description
+                    if query.lower() not in metadata.get("name", "").lower() and \
+                       query.lower() not in metadata.get("description", "").lower():
+                        continue
+                        
                     last_updated = max(
                         (f.stat().st_mtime for f in model_dir.glob('*') if f.is_file()),
                         default=os.path.getmtime(model_dir)
@@ -61,8 +66,7 @@ def get_models():
                         "description": metadata.get("description", "No description available"),
                         "lastUpdated": datetime.fromtimestamp(last_updated).isoformat(),
                         "thumbnail": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('thumbnail', 'thumbnail.jpg')}",
-                        "modelPath": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('modelFile', 'model.glb')}",
-                        "createdAt": metadata.get("createdAt", "")
+                        "modelPath": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('modelFile', 'model.glb')}"
                     })
                 except json.JSONDecodeError:
                     continue
