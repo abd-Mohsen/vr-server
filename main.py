@@ -1,13 +1,13 @@
-from fastapi import FastAPI, Form, HTTPException
+from fastapi import FastAPI, Form, HTTPException, UploadFile, File
 from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 import os
 import json
+import shutil
+import uuid
 from pathlib import Path
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
-from fastapi import FastAPI, UploadFile, File, Form, HTTPException
-from typing import Optional
 
 app = FastAPI()
 
@@ -19,14 +19,19 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Path to your models directory
+# Configuration
 MODELS_DIR = Path("./VR_Storage")
-print(MODELS_DIR)
-
 PORT = 8000
+BASE_URL = f"http://127.0.0.1:{PORT}"
 
-# Mount static files (so thumbnails and models can be accessed directly)
+# Ensure models directory exists
+MODELS_DIR.mkdir(exist_ok=True)
+
+# Mount static files
 app.mount("/static", StaticFiles(directory=MODELS_DIR), name="static")
+
+def generate_model_id() -> str:
+    return str(uuid.uuid4())
 
 @app.get("/api/models", response_model=List[Dict[str, Any]])
 def get_models():
@@ -43,28 +48,26 @@ def get_models():
                 try:
                     with open(metadata_path, 'r') as f:
                         metadata = json.load(f)
-                        
-                    # Get the most recent modified time in the directory
+                    
+                    # Get the most recent modified time
                     last_updated = max(
                         (f.stat().st_mtime for f in model_dir.glob('*') if f.is_file()),
                         default=os.path.getmtime(model_dir)
                     )
                     
                     models.append({
-                        "id": model_dir.name,
+                        "id": metadata.get("id", model_dir.name),
                         "name": metadata.get("name", model_dir.name),
                         "description": metadata.get("description", "No description available"),
                         "lastUpdated": datetime.fromtimestamp(last_updated).isoformat(),
-                        "thumbnail": f"http://127.0.0.1:{PORT}/static/{model_dir.name}/{metadata.get('thumbnail', 'thumbnail.jpg')}",
-                        "modelPath": f"http://127.0.0.1:{PORT}/static/{model_dir.name}/{metadata.get('modelFile', 'model.glb')}"
+                        "thumbnail": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('thumbnail', 'thumbnail.jpg')}",
+                        "modelPath": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('modelFile', 'model.glb')}",
+                        "createdAt": metadata.get("createdAt", "")
                     })
                 except json.JSONDecodeError:
                     continue
     
     return models
-
-
-MODELS_DIR.mkdir(exist_ok=True)
 
 @app.post("/api/models")
 async def create_model(
@@ -73,9 +76,11 @@ async def create_model(
     thumbnail: Optional[UploadFile] = File(None),
     model: UploadFile = File(...)
 ):
-    # Sanitize model name for folder name
-    folder_name = "".join(c if c.isalnum() else "_" for c in name.lower())
-    model_dir = MODELS_DIR / folder_name
+    # Generate unique ID
+    model_id = generate_model_id()
+    
+    # Create model directory using ID as folder name
+    model_dir = MODELS_DIR / model_id
     model_dir.mkdir(exist_ok=True)
     
     # Save 3D model file
@@ -85,7 +90,7 @@ async def create_model(
     with open(model_path, "wb") as buffer:
         buffer.write(await model.read())
     
-    # Save thumbnail (default to thumbnail.jpg if not provided)
+    # Save thumbnail
     thumbnail_filename = "thumbnail.jpg"
     if thumbnail:
         thumbnail_ext = Path(thumbnail.filename).suffix.lower()
@@ -94,8 +99,9 @@ async def create_model(
         with open(thumbnail_path, "wb") as buffer:
             buffer.write(await thumbnail.read())
     
-    # Create metadata.json
+    # Create metadata.json with ID
     metadata = {
+        "id": model_id,
         "name": name,
         "description": description,
         "thumbnail": thumbnail_filename,
@@ -110,8 +116,29 @@ async def create_model(
     return {
         "success": True,
         "message": "Model created successfully",
-        "modelId": folder_name
+        "modelId": model_id,
+        "metadata": metadata
     }
+
+@app.delete("/api/models/{model_id}")
+async def delete_model(model_id: str):
+    model_dir = MODELS_DIR / model_id
+    
+    if not model_dir.exists():
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    try:
+        # Remove the entire directory
+        shutil.rmtree(model_dir)
+        return {
+            "success": True,
+            "message": "Model deleted successfully"
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to delete model: {str(e)}"
+        )
 
 if __name__ == "__main__":
     import uvicorn
