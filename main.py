@@ -70,14 +70,22 @@ def search_models(query: str = ""):
                         default=os.path.getmtime(model_dir)
                     )
                     
-                    # Add cache-busting parameter to URLs
+                    # Add transformation matrix to the response (default identity matrix if not present)
+                    transform = metadata.get("transform", [
+                        [1, 0, 0, 0],
+                        [0, 1, 0, 0],
+                        [0, 0, 1, 0],
+                        [0, 0, 0, 1]
+                    ])
+                    
                     models.append({
                         "id": metadata.get("id", model_dir.name),
                         "name": metadata.get("name", model_dir.name),
                         "description": metadata.get("description", "No description available"),
                         "lastUpdated": datetime.fromtimestamp(last_updated).isoformat(),
                         "thumbnail": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('thumbnail', 'thumbnail.jpg')}?t={cache_buster}",
-                        "modelPath": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('modelFile', 'model.glb')}?t={cache_buster}"
+                        "modelPath": f"{BASE_URL}/static/{model_dir.name}/{metadata.get('modelFile', 'model.glb')}?t={cache_buster}",
+                        "transform": transform
                     })
                 except json.JSONDecodeError:
                     continue
@@ -120,7 +128,7 @@ async def create_model(
             buffer.flush()
             os.fsync(buffer.fileno())
     
-    # Create metadata.json with ID
+    # Add default identity transformation matrix to metadata
     metadata = {
         "id": model_id,
         "name": name,
@@ -128,7 +136,13 @@ async def create_model(
         "thumbnail": thumbnail_filename,
         "modelFile": model_filename,
         "createdAt": datetime.now().isoformat(),
-        "lastUpdated": datetime.now().isoformat()
+        "lastUpdated": datetime.now().isoformat(),
+        "transform": [
+            [1, 0, 0, 0],  # Default identity matrix
+            [0, 1, 0, 0],
+            [0, 0, 1, 0],
+            [0, 0, 0, 1]
+        ]
     }
     
     with open(model_dir / "metadata.json", "w") as f:
@@ -249,6 +263,71 @@ async def delete_model(model_id: str):
         raise HTTPException(
             status_code=500, 
             detail=f"Failed to delete model: {str(e)}"
+        )
+
+@app.post("/api/models/{model_id}/transform")
+async def update_model_transform(
+    model_id: str,
+    transform: str = Form(..., description="JSON string of 4x4 transformation matrix")
+):
+    print("updating matrix")
+    """
+    Update only the transformation matrix of a specific model
+    Format for transform:
+    [
+        [1, 0, 0, 0],  # Position/scale/rotation row 1
+        [0, 1, 0, 0],  # Position/scale/rotation row 2
+        [0, 0, 1, 0],  # Position/scale/rotation row 3
+        [0, 0, 0, 1]   # Position/scale/rotation row 4
+    ]
+    """
+    model_dir = MODELS_DIR / model_id
+    
+    if not model_dir.exists():
+        raise HTTPException(status_code=404, detail="Model not found")
+    
+    try:
+        # Load existing metadata
+        metadata_path = model_dir / "metadata.json"
+        with open(metadata_path, 'r') as f:
+            metadata = json.load(f)
+        
+        # Parse and validate the transformation matrix
+        try:
+            transform_matrix = json.loads(transform)
+            
+            # Basic validation
+            if not isinstance(transform_matrix, list) or \
+               len(transform_matrix) != 4 or \
+               any(not isinstance(row, list) or len(row) != 4 for row in transform_matrix):
+                raise ValueError("Invalid matrix format")
+                
+            metadata["transform"] = transform_matrix
+        except (json.JSONDecodeError, ValueError) as e:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Invalid transform format: {str(e)}. Expected 4x4 matrix"
+            )
+        
+        # Update last modified timestamp
+        metadata["lastUpdated"] = datetime.now().isoformat()
+        
+        # Save updated metadata
+        with open(metadata_path, 'w') as f:
+            json.dump(metadata, f, indent=2)
+            f.flush()
+            os.fsync(f.fileno())
+        
+        return {
+            "success": True,
+            "message": "Transform updated successfully",
+            "modelId": model_id,
+            "transform": transform_matrix
+        }
+    except Exception as e:
+        raise HTTPException(
+            status_code=500, 
+            detail=f"Failed to update transform: {str(e)}"
         )
 
 if __name__ == "__main__":
