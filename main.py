@@ -9,6 +9,8 @@ import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from datetime import datetime
+import httpx
+import logging
 
 app = FastAPI()
 
@@ -192,6 +194,7 @@ async def create_model(
         f.flush()
         os.fsync(f.fileno())
     
+    await notify_unity()
     return {
         "success": True,
         "message": "Model created successfully",
@@ -284,6 +287,7 @@ async def update_model(
                 f.flush()
                 os.fsync(f.fileno())
         
+        await notify_unity()
         return {
             "success": True,
             "message": "Model updated successfully",
@@ -322,7 +326,8 @@ async def toggle_model_visibility(
             json.dump(metadata, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        
+
+        await notify_unity()
         return {
             "success": True,
             "message": f"Model {'hidden' if hidden else 'unhidden'} successfully",
@@ -344,6 +349,8 @@ async def delete_model(model_id: str):
     
     try:
         shutil.rmtree(model_dir)
+
+        await notify_unity()
         return {
             "success": True,
             "message": "Model deleted successfully"
@@ -418,6 +425,48 @@ async def update_model_transform(
             status_code=500, 
             detail=f"Failed to update transform: {str(e)}"
         )
+
+
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+async def notify_unity():
+    """
+    Notify VR environment when a change happens
+    """
+    url = "http://127.0.0.1:53148/notify"
+    
+    try:
+        logger.info(f"Attempting to notify Unity at {url}")
+        
+        async with httpx.AsyncClient(timeout=10.0) as client:  # Added timeout
+            response = await client.get(url)
+            logger.info(f"Unity response status: {response.status_code}")
+            logger.info(f"Unity response text: {response.text}")
+            
+            response.raise_for_status()
+            return response.json()
+            
+    except httpx.ConnectError:
+        error_msg = f"Failed to connect to Unity server at {url}. Is the Unity application running?"
+        logger.error(error_msg)
+        raise HTTPException(status_code=503, detail=error_msg)
+        
+    except httpx.TimeoutException:
+        error_msg = "Timeout while connecting to Unity server. The server might be down or not responding."
+        logger.error(error_msg)
+        raise HTTPException(status_code=504, detail=error_msg)
+        
+    except httpx.HTTPStatusError as e:
+        error_msg = f"Unity server returned error: {e.response.status_code} - {e.response.text}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=e.response.status_code, detail=error_msg)
+        
+    except Exception as e:
+        error_msg = f"Unexpected error notifying Unity: {str(e)}"
+        logger.error(error_msg)
+        raise HTTPException(status_code=500, detail=error_msg)
 
 if __name__ == "__main__":
     import uvicorn
