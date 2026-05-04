@@ -1,2 +1,5 @@
 /VR_Storage
 /__pycache__
+venv/
+.env/
+*.pyc
